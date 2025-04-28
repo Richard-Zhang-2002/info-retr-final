@@ -2,6 +2,10 @@ import customtkinter as ctk
 from tkinter import filedialog
 import fitz
 import webbrowser
+from remotive_extractor import RemotiveJobExtractor
+import openai
+
+extractor = RemotiveJobExtractor()
 
 #setting UI RELATED STUFF
 ctk.set_appearance_mode("System")
@@ -16,6 +20,28 @@ resume_path = ctk.StringVar()
 current_selected_title = None
 #access the job by its title(here we assume no duplicate job titles, change this if we have any -> very unlikely though)
 job_card_refs = {}
+
+with open('openai_key.txt', 'r') as f:
+    api_key = f.read().strip()
+
+def ai_summarize(text):
+    if len(text) < 50:
+        return text
+
+    prompt = f"Summarize the following job description briefly and professionally:\n\n{text}"
+
+    try:
+        client = openai.OpenAI(api_key=api_key)
+        response = client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.7,
+            max_tokens=100
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        print(f"Error during summarization: {e}")
+        return text
 
 #check if the input includes only digits
 def only_digits(input):
@@ -38,7 +64,7 @@ def open_job_url(url):
     webbrowser.open_new(url)
 
 #happens when the user click on one of the searched jobs
-def toggle_description(title, summary, salary, location, years, card_frame):
+def toggle_description(title, description, salary, location, years, category, job_type, card_frame):
     global current_selected_title
 
     #if we already selected a title, unselect it(do not show its description)
@@ -59,13 +85,15 @@ def toggle_description(title, summary, salary, location, years, card_frame):
     salary_label.configure(text=f"💵 Salary: {salary or 'N/A'}")
     location_label.configure(text=f"📍 Location: {location or 'N/A'}")
     experience_label.configure(text=f"📆 Required Experience: {years or 'N/A'} years")
-    summary_label.configure(text=summary)
+    category_label.configure(text=f"🧩 Category: {category or 'N/A'}")
+    type_label.configure(text=f"🌎 Job Type: {job_type or 'N/A'}")
+    summary_label.configure(text=description or "No description available.")
 
     #make a grid to place these things
     description_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=(10, 20))
 
 #create job in ui(happens after I click submit and get all sort of job information)
-def add_job(title, url, summary, salary, location, years):
+def add_job(title, url, description, salary, location, years, category, job_type):
     #create the box for this job and tie it with the specific title
     job_card = ctk.CTkFrame(job_list_frame, fg_color="#f1f1f1", cursor="hand2")
     job_card.pack(fill="x", padx=5, pady=5)
@@ -84,7 +112,7 @@ def add_job(title, url, summary, salary, location, years):
 
     # basically if i click anywhere besides the button, i should activate the description of this job
     for i in [job_card, card_body, title_label]:
-        i.bind("<Button-1>", lambda e: toggle_description(title, summary, salary, location, years, job_card))
+        i.bind("<Button-1>", lambda e: toggle_description(title, description, salary, location, years, category, job_type, job_card))
 
 #well, happens when I click submit
 #TODO: make sure the salary min and max are numerical values(hint the users that this is in usd)
@@ -106,16 +134,58 @@ def submit():
     description_frame.grid_remove()
 
     #remove this in the future, for debug purpose only(to see what's read and what's not)
-    min_salary = salary_min.get()
-    max_salary = salary_max.get()
-    years_exp = experience.get()
-    desired_loc = location.get()
+    min_salary = salary_min.get().strip()
+    max_salary = salary_max.get().strip()
+    years_exp = experience.get().strip()
+    desired_loc = location.get().strip()
 
+    resume = resume_path.get()
+
+    jobs = extractor.process_job_descriptions(search=None, limit=20)
+
+    """
     print("\n=== User Input ===")
     print("Salary Min:", min_salary)
     print("Salary Max:", max_salary)
     print("Experience:", years_exp)
     print("Location:", desired_loc)
+    """
+
+    filtered_jobs = []
+    for job in jobs:
+        job_min_salary = job.get('min_salary')
+        job_max_salary = job.get('max_salary')
+        job_years_exp = job.get('years_experience')
+        job_location = job.get('location')
+
+        if min_salary and job_min_salary is not None and float(job_min_salary) < float(min_salary):
+            continue
+        if max_salary and job_max_salary is not None and float(job_max_salary) > float(max_salary):
+            continue
+        if years_exp and job_years_exp is not None and int(job_years_exp) > int(years_exp):
+            continue
+        #currently just text match, improve it if there is time
+        if desired_loc and job_location and desired_loc.lower() not in job_location.lower():
+            continue
+        filtered_jobs.append(job)
+
+    if not filtered_jobs:
+        print("No jobs matched your criteria.")
+        return
+    
+    for job in filtered_jobs:
+        add_job(
+            title=job['title'],
+            url=job['url'],
+            description=ai_summarize(job.get('description', "No description available.")),
+            salary=f"${job['min_salary']:.0f}–${job['max_salary']:.0f}" if job['min_salary'] and job['max_salary'] else None,
+            location=job['location'],
+            years=job['years_experience'],
+            category=job['category'],
+            job_type=job['job_type']
+        )
+
+    
 
     #print resume info too
     resume = resume_path.get()
@@ -125,19 +195,6 @@ def submit():
         print(text)
     else:
         print("\n(No resume uploaded)")
-
-
-
-
-
-    #create two demo jobs(for testing purpose only)
-    add_job("Software Engineer at Google", "https://careers.google.com/jobs/",
-            "Work on scalable systems, AI, and web technologies. Collaborate across teams on services impacting billions.",
-            "$120k–$180k", "Mountain View, CA", "3+")
-
-    add_job("AI Intern at OpenAI", "https://openai.com/careers/",
-            "Contribute to AGI research, tools, and deployment. Work with world-class researchers on real-world impact.",
-            "$80/hr", "San Francisco, CA", "1+")
 
 #UI beautification, thanks to the sample UI framework created by AI
 #my original version look way too ugly
@@ -184,7 +241,7 @@ job_list_frame = job_list_canvas
 
 #description on the bottom(remove as it is not selected in the initial state)
 #with some string as its content
-description_frame = ctk.CTkFrame(main_right_frame, fg_color="#ffffff", corner_radius=8)
+description_frame = ctk.CTkScrollableFrame(main_right_frame, fg_color="#ffffff", corner_radius=8)
 description_frame.grid_remove()
 
 job_title_label = ctk.CTkLabel(description_frame, text="", font=("Arial", 16, "bold"), anchor="w")
@@ -199,8 +256,16 @@ location_label.pack(anchor="w", padx=10)
 experience_label = ctk.CTkLabel(description_frame, text="", anchor="w")
 experience_label.pack(anchor="w", padx=10)
 
+category_label = ctk.CTkLabel(description_frame, text="", anchor="w")
+category_label.pack(anchor="w", padx=10)
+
+type_label = ctk.CTkLabel(description_frame, text="", anchor="w")
+type_label.pack(anchor="w", padx=10)
+
 summary_label = ctk.CTkLabel(description_frame, text="", anchor="w", wraplength=700, justify="left")
 summary_label.pack(anchor="w", padx=10, pady=(10, 5))
+
+
 
 #just run this
 app.mainloop()
