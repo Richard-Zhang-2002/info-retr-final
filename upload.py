@@ -4,6 +4,7 @@ import fitz
 import webbrowser
 from remotive_extractor import RemotiveJobExtractor
 import openai
+import re
 
 extractor = RemotiveJobExtractor()
 
@@ -21,9 +22,10 @@ current_selected_title = None
 #access the job by its title(here we assume no duplicate job titles, change this if we have any -> very unlikely though)
 job_card_refs = {}
 
-with open('openai_key.txt', 'r') as f:
-    api_key = f.read().strip()
+#with open('openai_key.txt', 'r') as f:
+#    api_key = f.read().strip()
 
+"""
 def ai_summarize(text):
     if len(text) < 50:
         return text
@@ -42,6 +44,29 @@ def ai_summarize(text):
     except Exception as e:
         print(f"Error during summarization: {e}")
         return text
+"""
+
+#not really AI, but way faster
+def ai_summarize(text):
+    if not text:
+        return "No description available."
+    
+    # Remove any HTML tags
+    text = re.sub(r'<[^>]+>', '', text)
+
+    # Replace multiple newlines or spaces with single
+    text = re.sub(r'\n+', '\n', text)
+    text = re.sub(r'[ \t]+', ' ', text)
+
+    # Trim leading/trailing spaces
+    text = text.strip()
+
+    # If still too short after cleaning
+    if len(text) < 30:
+        return "No substantial description available."
+
+    return text
+
 
 #check if the input includes only digits
 def only_digits(input):
@@ -141,7 +166,12 @@ def submit():
 
     resume = resume_path.get()
 
-    jobs = extractor.process_job_descriptions(search=None, limit=20)
+    if not resume:
+        print("Please upload a resume!")
+        return
+
+    resume_text = extractor.load_resume(resume)
+    jobs = extractor.process_job_descriptions(search=None, limit=50)
 
     """
     print("\n=== User Input ===")
@@ -173,7 +203,9 @@ def submit():
         print("No jobs matched your criteria.")
         return
     
-    for job in filtered_jobs:
+    top_jobs = extractor.match_resume_to_jobs(resume_text, filtered_jobs, top_n=20)
+    
+    for job in top_jobs:
         add_job(
             title=job['title'],
             url=job['url'],
@@ -264,6 +296,22 @@ type_label.pack(anchor="w", padx=10)
 
 summary_label = ctk.CTkLabel(description_frame, text="", anchor="w", wraplength=700, justify="left")
 summary_label.pack(anchor="w", padx=10, pady=(10, 5))
+
+#update textbox after screen recizing
+def update_wraplength(event=None):
+    new_width = description_frame.winfo_width() - 40
+    if new_width > 100:
+        summary_label.configure(wraplength=new_width)
+
+resize_after_id = None
+
+def update_wraplength_wait(event=None):
+    global resize_after_id
+    if resize_after_id is not None:
+        app.after_cancel(resize_after_id)
+    resize_after_id = app.after(150, update_wraplength)
+
+app.bind("<Configure>", update_wraplength_wait)
 
 
 
