@@ -165,7 +165,7 @@ def submit():
         location="Remote" if desired_loc.lower() == "remote" else None,
         level=level,
         page=1, 
-        limit=50
+        limit=500
     )
 
     # Filter jobs based on criteria
@@ -206,7 +206,7 @@ def submit():
         return
     
     # Match resume to jobs
-    top_jobs = extractor.match_resume_to_jobs(resume_text, filtered_jobs, top_n=20)
+    top_jobs = extractor.match_resume_to_jobs(resume_text, filtered_jobs, top_n=100)
     
     # Add jobs to UI
     for job in top_jobs:

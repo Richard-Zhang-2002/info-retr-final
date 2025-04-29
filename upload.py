@@ -171,7 +171,7 @@ def submit():
         return
 
     resume_text = extractor.load_resume(resume)
-    jobs = extractor.process_job_descriptions(search=None, limit=50)
+    jobs = extractor.process_job_descriptions(search=None, limit=500)
 
     """
     print("\n=== User Input ===")
@@ -203,7 +203,7 @@ def submit():
         print("No jobs matched your criteria.")
         return
     
-    top_jobs = extractor.match_resume_to_jobs(resume_text, filtered_jobs, top_n=20)
+    top_jobs = extractor.match_resume_to_jobs(resume_text, filtered_jobs, top_n=100)
     
     for job in top_jobs:
         add_job(

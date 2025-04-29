@@ -9,6 +9,9 @@ from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
+from sentence_transformers import SentenceTransformer
+import numpy as np
+
 
 class MuseJobExtractor:
     """Full extractor that fetches jobs, extracts metadata, matches resume, and can save results."""
@@ -16,6 +19,7 @@ class MuseJobExtractor:
     def __init__(self, api_key=None):
         self.api_url = "https://www.themuse.com/api/public/jobs"
         self.api_key = api_key  # Optional API key for higher rate limits
+        self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
 
     def fetch_jobs(self, category: str = None, company_name: str = None, 
                   search: str = None, location: str = None, level: str = None,
@@ -168,50 +172,63 @@ class MuseJobExtractor:
         Returns:
             List of dictionaries containing processed job information
         """
-        response = self.fetch_jobs(category, company_name, search, location, level, page)
-        jobs = response.get("results", [])
-        
         results = []
-        for job in jobs[:limit]:  # Limit to specified number of results
-            contents = job.get("contents", "")
-            
-            # Get locations and categories
-            locations = job.get("locations", [])
-            categories = job.get("categories", [])
-            levels = job.get("levels", [])
-            
-            # Extract additional information
-            salary_range = self.extract_salary_range(contents)
-            experience = self.extract_experience(contents)
-            location_type = self.extract_location_type(locations, contents)
-            
-            min_salary, max_salary = (None, None)
-            if salary_range:
-                min_salary, max_salary = salary_range
-            
-            # Prepare location and category strings
-            location_names = [loc.get("name", "") for loc in locations]
-            category_names = [cat.get("name", "") for cat in categories]
-            level_names = [level.get("name", "") for level in levels]
-            
-            job_info = {
-                "job_id": job.get("id"),
-                "title": job.get("name"),
-                "company": job.get("company", {}).get("name") if job.get("company") else None,
-                "url": job.get("refs", {}).get("landing_page") if job.get("refs") else None,
-                "category": ", ".join(category_names) if category_names else None,
-                "job_type": job.get("type"),
-                "min_salary": min_salary,
-                "max_salary": max_salary,
-                "years_experience": experience,
-                "locations": ", ".join(location_names) if location_names else None,
-                "location_type": location_type,
-                "levels": ", ".join(level_names) if level_names else None,
-                "publication_date": job.get("publication_date"),
-                "description": self.clean_text(contents)
-            }
-            results.append(job_info)
+        current_page = page
+        seen_jobs = set() 
+    
+        while len(results) < limit:
+            response = self.fetch_jobs(category, company_name, search, location, level, page=current_page)
+            jobs = response.get("results", [])
+            if not jobs:
+                break
+            for job in jobs:  
+                # Limit to specified number of results
+                if len(results) >= limit:
+                    break
+                contents = job.get("contents", "")
+                key = (job.get("name", "").strip().lower(), self.clean_text(contents).strip().lower())
+                if key in seen_jobs:
+                    continue
+                seen_jobs.add(key)
+                # Get locations and categories
+                locations = job.get("locations", [])
+                categories = job.get("categories", [])
+                levels = job.get("levels", [])
+                
+                # Extract additional information
+                salary_range = self.extract_salary_range(contents)
+                experience = self.extract_experience(contents)
+                location_type = self.extract_location_type(locations, contents)
+                
+                min_salary, max_salary = (None, None)
+                if salary_range:
+                    min_salary, max_salary = salary_range
+                
+                # Prepare location and category strings
+                location_names = [loc.get("name", "") for loc in locations]
+                category_names = [cat.get("name", "") for cat in categories]
+                level_names = [level.get("name", "") for level in levels]
+                
+                job_info = {
+                    "job_id": job.get("id"),
+                    "title": job.get("name"),
+                    "company": job.get("company", {}).get("name") if job.get("company") else None,
+                    "url": job.get("refs", {}).get("landing_page") if job.get("refs") else None,
+                    "category": ", ".join(category_names) if category_names else None,
+                    "job_type": job.get("type"),
+                    "min_salary": min_salary,
+                    "max_salary": max_salary,
+                    "years_experience": experience,
+                    "locations": ", ".join(location_names) if location_names else None,
+                    "location_type": location_type,
+                    "levels": ", ".join(level_names) if level_names else None,
+                    "publication_date": job.get("publication_date"),
+                    "description": self.clean_text(contents)
+                }
+                results.append(job_info)
+            current_page += 1
         
+        print("number of job found:",len(results))
         return results
 
     def load_resume(self, filepath: str) -> str:
@@ -235,9 +252,13 @@ class MuseJobExtractor:
     def match_resume_to_jobs(self, resume_text: str, jobs: List[Dict], top_n: int = 5) -> List[Dict]:
         """Match resume to jobs using TF-IDF and cosine similarity."""
         corpus = [resume_text] + [job["description"] for job in jobs]
-        vectorizer = TfidfVectorizer(stop_words='english')
-        tfidf_matrix = vectorizer.fit_transform(corpus)
-        cosine_sim = cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:]).flatten()
+        embeddings = self.embedding_model.encode(corpus, convert_to_tensor=True)
+
+        resume_embedding = embeddings[0].cpu().numpy()
+        job_embeddings = embeddings[1:].cpu().numpy()
+
+        cosine_sim = (resume_embedding @ job_embeddings.T) / (np.linalg.norm(resume_embedding) * np.linalg.norm(job_embeddings, axis=1))
+
 
         for idx, job in enumerate(jobs):
             job["similarity_score"] = cosine_sim[idx]

@@ -9,12 +9,15 @@ from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
+from sentence_transformers import SentenceTransformer
+import numpy as np
 
 class RemotiveJobExtractor:
     """Full extractor that fetches jobs, extracts metadata, matches resume, and can save results."""
 
     def __init__(self):
         self.api_url = "https://remotive.com/api/remote-jobs"
+        self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
 
     def fetch_jobs(self, category: str = None, company_name: str = None, search: str = None, limit: int = 50) -> Dict[str, Any]:
         params = {}
@@ -176,9 +179,12 @@ class RemotiveJobExtractor:
 
     def match_resume_to_jobs(self, resume_text: str, jobs: List[Dict], top_n: int = 5) -> List[Dict]:
         corpus = [resume_text] + [job["description"] for job in jobs]
-        vectorizer = TfidfVectorizer(stop_words='english')
-        tfidf_matrix = vectorizer.fit_transform(corpus)
-        cosine_sim = cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:]).flatten()
+        embeddings = self.embedding_model.encode(corpus, convert_to_tensor=True)
+
+        resume_embedding = embeddings[0].cpu().numpy()
+        job_embeddings = embeddings[1:].cpu().numpy()
+
+        cosine_sim = (resume_embedding @ job_embeddings.T) / (np.linalg.norm(resume_embedding) * np.linalg.norm(job_embeddings, axis=1))
 
         for idx, job in enumerate(jobs):
             job["similarity_score"] = cosine_sim[idx]
