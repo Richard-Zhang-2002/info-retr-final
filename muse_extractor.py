@@ -11,6 +11,10 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from sentence_transformers import SentenceTransformer
 import numpy as np
+import nltk
+from nltk.corpus import stopwords
+from nltk.stem import PorterStemmer
+nltk.download('stopwords')
 
 
 class MuseJobExtractor:
@@ -18,7 +22,7 @@ class MuseJobExtractor:
 
     def __init__(self, api_key=None):
         self.api_url = "https://www.themuse.com/api/public/jobs"
-        self.api_key = api_key  # Optional API key for higher rate limits
+        self.api_key = api_key 
         self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
 
     def fetch_jobs(self, category: str = None, company_name: str = None, 
@@ -76,6 +80,18 @@ class MuseJobExtractor:
         text = re.sub(r'<[^>]+>', ' ', text)
         text = re.sub(r'\s+', ' ', text)
         return text.strip()
+    
+    def preprocess_text(self, text: str) -> str:
+        """Lowercase, remove stopwords, and apply stemming."""
+        if not text:
+            return ""
+        text = re.sub(r'<[^>]+>', ' ', text)  # Remove HTML tags
+        text = re.sub(r'[^a-zA-Z]', ' ', text)  # Remove punctuation/numbers
+        tokens = text.lower().split()
+        stop_words = set(stopwords.words('english'))
+        stemmer = PorterStemmer()
+        stemmed_tokens = [stemmer.stem(token) for token in tokens if token not in stop_words]
+        return ' '.join(stemmed_tokens)
 
     def extract_salary_range(self, contents: str) -> Optional[Tuple[float, float]]:
         """Extract salary range from job description."""
@@ -251,7 +267,7 @@ class MuseJobExtractor:
 
     def match_resume_to_jobs(self, resume_text: str, jobs: List[Dict], top_n: int = 5) -> List[Dict]:
         """Match resume to jobs using TF-IDF and cosine similarity."""
-        corpus = [resume_text] + [job["description"] for job in jobs]
+        corpus = [self.preprocess_text(resume_text)] + [self.preprocess_text(job["description"]) for job in jobs]
         embeddings = self.embedding_model.encode(corpus, convert_to_tensor=True)
 
         resume_embedding = embeddings[0].cpu().numpy()

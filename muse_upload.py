@@ -5,6 +5,7 @@ import webbrowser
 from muse_extractor import MuseJobExtractor
 import re
 
+
 extractor = MuseJobExtractor()  # Initialize without API key - consider adding API key for production use
 
 # Setting UI related stuff
