@@ -15,15 +15,24 @@ import nltk
 from nltk.corpus import stopwords
 from nltk.stem import PorterStemmer
 nltk.download('stopwords')
-
+import openai
 
 class MuseJobExtractor:
     """Full extractor that fetches jobs, extracts metadata, matches resume, and can save results."""
 
     def __init__(self, api_key=None):
+        
         self.api_url = "https://www.themuse.com/api/public/jobs"
         self.api_key = api_key 
         self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+
+
+        try:
+            with open("openai_key.txt", "r") as f:
+                key = f.read().strip()
+                self.client = openai.OpenAI(api_key=key)
+        except FileNotFoundError:
+            print("Warning: openai_key.txt not found. Resume summarization will fail.")
 
     def fetch_jobs(self, category: str = None, company_name: str = None, 
                   search: str = None, location: str = None, level: str = None,
@@ -44,6 +53,9 @@ class MuseJobExtractor:
             Dictionary containing job data
         """
         params = {'page': page}
+        if search:
+            params['search'] = search
+
         
         if self.api_key:
             params['api_key'] = self.api_key
@@ -81,17 +93,25 @@ class MuseJobExtractor:
         text = re.sub(r'\s+', ' ', text)
         return text.strip()
     
-    def preprocess_text(self, text: str) -> str:
-        """Lowercase, remove stopwords, and apply stemming."""
+    def preprocess_job_description(self, text: str) -> str:
         if not text:
             return ""
-        text = re.sub(r'<[^>]+>', ' ', text)  # Remove HTML tags
-        text = re.sub(r'[^a-zA-Z]', ' ', text)  # Remove punctuation/numbers
-        tokens = text.lower().split()
-        stop_words = set(stopwords.words('english'))
-        stemmer = PorterStemmer()
-        stemmed_tokens = [stemmer.stem(token) for token in tokens if token not in stop_words]
-        return ' '.join(stemmed_tokens)
+        text = re.sub(r'<[^>]+>', ' ', text)
+        text = re.sub(r'[^a-zA-Z]', ' ', text)
+        return ' '.join(text.lower().split())
+    
+
+    def summarize_resume(self, resume_text: str) -> str:
+        response = self.client.chat.completions.create(
+                    model="gpt-3.5-turbo",
+                    messages=[
+                        {"role": "user", "content": f"Summarize this resume into a few coherent paragraphs:\n{resume_text}"}
+                    ],
+                    temperature=0.3
+                )
+        return response.choices[0].message.content.strip()
+
+
 
     def extract_salary_range(self, contents: str) -> Optional[Tuple[float, float]]:
         """Extract salary range from job description."""
@@ -192,6 +212,11 @@ class MuseJobExtractor:
         current_page = page
         seen_jobs = set() 
     
+        total_jobs_scanned = 0
+
+        stemmer = PorterStemmer()
+        search_stem = stemmer.stem(search.lower()) if search else None
+
         while len(results) < limit:
             response = self.fetch_jobs(category, company_name, search, location, level, page=current_page)
             jobs = response.get("results", [])
@@ -206,6 +231,23 @@ class MuseJobExtractor:
                 if key in seen_jobs:
                     continue
                 seen_jobs.add(key)
+
+                total_jobs_scanned += 1
+                if total_jobs_scanned >= 4 * limit:
+                    break
+                
+
+                if search_stem:
+                    contents = job.get("contents", "")
+                    title = job.get("name", "").strip()
+                    cleaned_desc = self.clean_text(contents).strip()
+
+                    stemmed_title = ' '.join([stemmer.stem(w) for w in title.lower().split()])
+                    stemmed_desc = ' '.join([stemmer.stem(w) for w in cleaned_desc.lower().split()])
+
+                    if search_stem and (search_stem not in stemmed_title and search_stem not in stemmed_desc):
+                        continue
+                
                 # Get locations and categories
                 locations = job.get("locations", [])
                 categories = job.get("categories", [])
@@ -243,6 +285,8 @@ class MuseJobExtractor:
                 }
                 results.append(job_info)
             current_page += 1
+            if total_jobs_scanned >= 4 * limit:
+                break
         
         print("number of job found:",len(results))
         return results
@@ -267,7 +311,8 @@ class MuseJobExtractor:
 
     def match_resume_to_jobs(self, resume_text: str, jobs: List[Dict], top_n: int = 5) -> List[Dict]:
         """Match resume to jobs using TF-IDF and cosine similarity."""
-        corpus = [self.preprocess_text(resume_text)] + [self.preprocess_text(job["description"]) for job in jobs]
+        resume_summary = self.summarize_resume(resume_text)
+        corpus = [resume_summary] + [self.preprocess_job_description(job["description"]) for job in jobs]
         embeddings = self.embedding_model.encode(corpus, convert_to_tensor=True)
 
         resume_embedding = embeddings[0].cpu().numpy()

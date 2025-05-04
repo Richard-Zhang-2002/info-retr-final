@@ -161,13 +161,17 @@ def submit():
     # Get resume text
     resume_text = extractor.load_resume(resume)
     
+    search_keyword = keyword.get().strip()
+
     # Fetch jobs from The Muse API
     jobs = extractor.process_job_descriptions(
+        search=search_keyword if search_keyword != "" else None,
         location="Remote" if desired_loc.lower() == "remote" else None,
         level=level,
         page=1, 
         limit=500
     )
+
 
     # Filter jobs based on criteria
     filtered_jobs = []
@@ -236,6 +240,10 @@ left_frame = ctk.CTkFrame(app, width=250)
 left_frame.pack(side="left", fill="y", padx=10, pady=10)
 
 validate_num = app.register(only_digits)
+
+ctk.CTkLabel(left_frame, text="Keyword Search").pack(anchor="w")
+keyword = ctk.CTkEntry(left_frame)
+keyword.pack(anchor="w", fill="x", pady=(0, 10))
 
 ctk.CTkLabel(left_frame, text="Salary Range($)").pack(anchor="w", pady=(5, 0))
 salary_min = ctk.CTkEntry(left_frame, placeholder_text="Min", validate="key", validatecommand=(validate_num, "%S"))
