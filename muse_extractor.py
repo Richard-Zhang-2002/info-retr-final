@@ -16,6 +16,7 @@ from nltk.corpus import stopwords
 from nltk.stem import PorterStemmer
 nltk.download('stopwords')
 import openai
+from groq import Groq
 
 class MuseJobExtractor:
     """Full extractor that fetches jobs, extracts metadata, matches resume, and can save results."""
@@ -30,7 +31,7 @@ class MuseJobExtractor:
         try:
             with open("openai_key.txt", "r") as f:
                 key = f.read().strip()
-                self.client = openai.OpenAI(api_key=key)
+                self.client = Groq(api_key=key)
         except FileNotFoundError:
             print("Warning: openai_key.txt not found. Resume summarization will fail.")
 
@@ -103,7 +104,7 @@ class MuseJobExtractor:
 
     def summarize_resume(self, resume_text: str) -> str:
         response = self.client.chat.completions.create(
-                    model="gpt-3.5-turbo",
+                    model="llama-3.3-70b-versatile",
                     messages=[
                         {"role": "user", "content": f"Summarize this resume into a few coherent paragraphs:\n{resume_text}"}
                     ],
