@@ -1,0 +1,12 @@
+customtkinter==5.2.2
+fitz==0.0.1.dev2
+geopy==2.4.1
+groq==0.24.0
+nltk==3.7
+numpy==1.24.4
+openai==1.78.0
+pandas==2.2.3
+pdfplumber==0.11.6
+Requests==2.32.3
+scikit_learn==1.0.2
+sentence_transformers==4.1.0

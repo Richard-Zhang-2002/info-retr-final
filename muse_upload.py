@@ -47,6 +47,23 @@ def summarize_text(text):
 def only_digits(input):
     return input.isdigit() or input == ""
 
+# Check if the input is a valid float number
+def validate_float(input):
+    # Allow empty string for deletion
+    if input == "":
+        return True
+    
+    # Allow single decimal point
+    if input == ".":
+        return True
+    
+    # Allow digits and one decimal point
+    try:
+        float(input)
+        return True
+    except ValueError:
+        return False
+
 # Happens when user clicks on "upload resume(pdf)"
 def upload_resume():
     path = filedialog.askopenfilename(filetypes=[("PDF files", "*.pdf")])
@@ -210,8 +227,43 @@ def submit():
         status_label.configure(text="No jobs matched your criteria. Try broadening your search.")
         return
     
-    # Match resume to jobs
-    top_jobs = extractor.match_resume_to_jobs(resume_text, filtered_jobs, top_n=100)
+    # Get the weights from the UI
+    try:
+        content_weight = float(content_weight_entry.get().strip()) if content_weight_entry.get().strip() else 0.6
+        location_weight = float(location_weight_entry.get().strip()) if location_weight_entry.get().strip() else 0.15
+        salary_weight = float(salary_weight_entry.get().strip()) if salary_weight_entry.get().strip() else 0.15
+        experience_weight = float(experience_weight_entry.get().strip()) if experience_weight_entry.get().strip() else 0.1
+        
+        # Normalize weights to ensure they sum to 1.0
+        total_weight = content_weight + location_weight + salary_weight + experience_weight
+        if total_weight <= 0:
+            raise ValueError("Total weight must be greater than 0")
+            
+        content_weight /= total_weight
+        location_weight /= total_weight
+        salary_weight /= total_weight
+        experience_weight /= total_weight
+        
+    except ValueError:
+        status_label.configure(text="Invalid weight values. Using defaults.")
+        content_weight = 0.6
+        location_weight = 0.15
+        salary_weight = 0.15
+        experience_weight = 0.1
+    
+    # Match resume to jobs with customized weights
+    top_jobs = extractor.match_resume_to_jobs(
+        resume_text, 
+        filtered_jobs, 
+        top_n=100,
+        target_location=desired_loc if desired_loc else None,
+        target_salary=(float(min_salary) + float(max_salary)) / 2 if min_salary and max_salary else None,
+        target_experience=int(years_exp) if years_exp else None,
+        weight_content=content_weight,
+        weight_location=location_weight,
+        weight_salary=salary_weight,
+        weight_experience=experience_weight
+    )
     
     # Add jobs to UI
     for job in top_jobs:
@@ -240,7 +292,21 @@ left_frame = ctk.CTkFrame(app, width=250)
 left_frame.pack(side="left", fill="y", padx=10, pady=10)
 
 validate_num = app.register(only_digits)
+validate_float_cmd = app.register(validate_float)
 
+# Create a frame to show more advanced options
+advanced_frame = ctk.CTkFrame(left_frame)
+
+# Create a toggle for advanced options
+show_advanced = ctk.BooleanVar(value=False)
+
+def toggle_advanced():
+    if show_advanced.get():
+        advanced_frame.pack(anchor="w", fill="x", pady=10)
+    else:
+        advanced_frame.pack_forget()
+
+# Basic search fields
 ctk.CTkLabel(left_frame, text="Keyword Search").pack(anchor="w")
 keyword = ctk.CTkEntry(left_frame)
 keyword.pack(anchor="w", fill="x", pady=(0, 10))
@@ -259,6 +325,35 @@ ctk.CTkLabel(left_frame, text="Desired Work Location").pack(anchor="w")
 location = ctk.CTkEntry(left_frame)
 location.pack(anchor="w", fill="x", pady=(0, 10))
 
+# Advanced options toggle
+ctk.CTkCheckBox(left_frame, text="Show Weight Controls", variable=show_advanced, command=toggle_advanced).pack(anchor="w", pady=(10, 0))
+
+# Weight adjustment controls
+ctk.CTkLabel(advanced_frame, text="Matching Weights", font=("Segoe UI", 12, "bold")).pack(anchor="w", pady=(5, 5))
+
+ctk.CTkLabel(advanced_frame, text="Content Relevance").pack(anchor="w")
+content_weight_entry = ctk.CTkEntry(advanced_frame, validate="key", validatecommand=(validate_float_cmd, "%P"))
+content_weight_entry.pack(anchor="w", fill="x", pady=(0, 5))
+content_weight_entry.insert(0, "0.6")
+
+ctk.CTkLabel(advanced_frame, text="Location Proximity").pack(anchor="w")
+location_weight_entry = ctk.CTkEntry(advanced_frame, validate="key", validatecommand=(validate_float_cmd, "%P"))
+location_weight_entry.pack(anchor="w", fill="x", pady=(0, 5))
+location_weight_entry.insert(0, "0.15")
+
+ctk.CTkLabel(advanced_frame, text="Salary Match").pack(anchor="w")
+salary_weight_entry = ctk.CTkEntry(advanced_frame, validate="key", validatecommand=(validate_float_cmd, "%P"))
+salary_weight_entry.pack(anchor="w", fill="x", pady=(0, 5))
+salary_weight_entry.insert(0, "0.15")
+
+ctk.CTkLabel(advanced_frame, text="Experience Match").pack(anchor="w")
+experience_weight_entry = ctk.CTkEntry(advanced_frame, validate="key", validatecommand=(validate_float_cmd, "%P"))
+experience_weight_entry.pack(anchor="w", fill="x", pady=(0, 5))
+experience_weight_entry.insert(0, "0.1")
+
+ctk.CTkLabel(advanced_frame, text="Note: Weights will be normalized", font=("Segoe UI", 10, "italic")).pack(anchor="w", pady=(0, 5))
+
+# Resume upload and submit buttons
 ctk.CTkButton(left_frame, text="Upload Resume (PDF)", command=upload_resume).pack(pady=10)
 ctk.CTkLabel(left_frame, textvariable=resume_path, wraplength=250).pack()
 ctk.CTkButton(left_frame, text="Submit", command=submit).pack(pady=15)
