@@ -153,18 +153,13 @@ def submit():
     max_salary = salary_max.get().strip() 
     years_exp = experience.get().strip()
     desired_loc = location.get().strip()
+    search_keyword = keyword.get().strip()
     
-    # Get experience level based on years
-    level = None
-    if years_exp:
-        years = int(years_exp)
-        if years <= 1:
-            level = "entry"
-        elif years <= 5:
-            level = "mid"
-        else:
-            level = "senior"
-
+    # Convert inputs to appropriate types for the extractor
+    min_salary_val = float(min_salary) if min_salary else None
+    max_salary_val = float(max_salary) if max_salary else None
+    years_exp_val = int(years_exp) if years_exp else None
+    
     # Get resume
     resume = resume_path.get()
     if not resume:
@@ -176,57 +171,12 @@ def submit():
     app.update_idletasks()  # Update UI to show status message
 
     # Get resume text
-    resume_text = extractor.load_resume(resume)
-    
-    search_keyword = keyword.get().strip()
-
-    # Fetch jobs from The Muse API
-    jobs = extractor.process_job_descriptions(
-        search=search_keyword if search_keyword != "" else None,
-        location="Remote" if desired_loc.lower() == "remote" else None,
-        level=level,
-        page=1, 
-        limit=500
-    )
-
-
-    # Filter jobs based on criteria
-    filtered_jobs = []
-    for job in jobs:
-        job_min_salary = job.get('min_salary')
-        job_max_salary = job.get('max_salary')
-        job_years_exp = job.get('years_experience')
-        job_location = job.get('locations')
-        
-        # Filter by salary if provided
-        if min_salary and job_min_salary is not None and float(job_min_salary) < float(min_salary):
-            continue
-        if max_salary and job_max_salary is not None and float(job_max_salary) > float(max_salary):
-            continue
-        
-        # Filter by experience if provided
-        if years_exp and job_years_exp is not None and int(job_years_exp) > int(years_exp):
-            continue
-        
-        # Filter by location if provided (more comprehensive than before)
-        if desired_loc and job_location:
-            location_match = False
-            # Check if any location matches the search term
-            if desired_loc.lower() == "remote" and "remote" in job_location.lower():
-                location_match = True
-            elif desired_loc.lower() != "remote" and desired_loc.lower() in job_location.lower():
-                location_match = True
-                
-            if not location_match:
-                continue
-                
-        filtered_jobs.append(job)
-
-    if not filtered_jobs:
-        print("No jobs matched your criteria.")
-        status_label.configure(text="No jobs matched your criteria. Try broadening your search.")
+    try:
+        resume_text = extractor.load_resume(resume)
+    except Exception as e:
+        status_label.configure(text=f"Error loading resume: {str(e)}")
         return
-    
+
     # Get the weights from the UI
     try:
         content_weight = float(content_weight_entry.get().strip()) if content_weight_entry.get().strip() else 0.6
@@ -251,26 +201,55 @@ def submit():
         salary_weight = 0.15
         experience_weight = 0.1
     
-    # Match resume to jobs with customized weights
-    top_jobs = extractor.match_resume_to_jobs(
-        resume_text, 
-        filtered_jobs, 
-        top_n=100,
-        target_location=desired_loc if desired_loc else None,
-        target_salary=(float(min_salary) + float(max_salary)) / 2 if min_salary and max_salary else None,
-        target_experience=int(years_exp) if years_exp else None,
-        weight_content=content_weight,
-        weight_location=location_weight,
-        weight_salary=salary_weight,
-        weight_experience=experience_weight
-    )
+    # Get level based on years of experience
+    level = None
+    if years_exp_val is not None:
+        if years_exp_val <= 1:
+            level = "entry"
+        elif years_exp_val <= 5:
+            level = "mid"
+        else:
+            level = "senior"
+    
+    try:
+        # Use the more comprehensive method from the extractor
+        matched_jobs = extractor.match_resume_with_fuzzy_criteria(
+            resume_text=resume_text,
+            location=desired_loc if desired_loc else None,
+            salary_min=min_salary_val,
+            salary_max=max_salary_val,
+            experience_years=years_exp_val,
+            search=search_keyword if search_keyword else None,
+            level=level,
+            location_max_distance=2000, 
+            salary_tolerance_percent=100, 
+            experience_tolerance_years=20,  
+            limit=100,  # Fetch up to 100 jobs before filtering
+            top_n=20,   # Return top 20 matches
+            weight_content=content_weight,
+            weight_location=location_weight,
+            weight_salary=salary_weight,
+            weight_experience=experience_weight
+        )
+    except Exception as e:
+        status_label.configure(text=f"Error matching jobs: {str(e)}")
+        print(f"Error details: {e}")
+        return
+    
+    if not matched_jobs:
+        status_label.configure(text="No matching jobs found. Try broadening your search criteria.")
+        return
     
     # Add jobs to UI
-    for job in top_jobs:
+    for job in matched_jobs:
         # Format salary if available
         salary_display = None
-        if job['min_salary'] and job['max_salary']:
+        if job.get('min_salary') and job.get('max_salary'):
             salary_display = f"${job['min_salary']:.0f}–${job['max_salary']:.0f}"
+        elif job.get('min_salary'):
+            salary_display = f"${job['min_salary']:.0f}+"
+        elif job.get('max_salary'):
+            salary_display = f"Up to ${job['max_salary']:.0f}"
             
         add_job(
             title=job['title'],
@@ -280,11 +259,12 @@ def submit():
             location=job['locations'],
             years=job['years_experience'],
             category=job['category'],
-            job_type=job['job_type'],
-            levels=job['levels']
+            job_type=job.get('job_type', 'N/A'),
+            levels=job.get('levels', 'N/A')
         )
     
-    status_label.configure(text=f"Found {len(top_jobs)} matching jobs!")
+    status_label.configure(text=f"Found {len(matched_jobs)} matching jobs!")
+
 
 # UI layout
 # Left frame for user input and controls

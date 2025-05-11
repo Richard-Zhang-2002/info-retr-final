@@ -227,12 +227,11 @@ class MuseJobExtractor:
         """Calculate the distance between two locations in miles."""
         coords1 = self.geocode_location(location1)
         coords2 = self.geocode_location(location2)
-        
         if coords1 and coords2:
             return geopy.distance.distance(coords1, coords2).miles
         return None
         
-    def is_within_location_range(self, job_location: str, desired_location: str, max_distance_km: float) -> bool:
+    def is_within_location_range(self, job_location: str, desired_location: str, max_distance: float) -> bool:
         """Check if job location is within the specified distance of the desired location."""
         if not job_location or not desired_location:
             return False
@@ -247,7 +246,8 @@ class MuseJobExtractor:
             
         # Calculate distance
         distance = self.calculate_location_distance(job_location, desired_location)
-        return distance is not None and distance <= max_distance_km
+        print(distance)
+        return distance is not None and distance <= max_distance
     
     def is_within_salary_range(self, job_min: Optional[float], job_max: Optional[float], 
                               desired_min: Optional[float], desired_max: Optional[float], 
@@ -287,13 +287,13 @@ class MuseJobExtractor:
             
         # Check overlap scenarios
         if job_min is not None and job_max is not None:
-            # Case 1: Job has both min and max salary
+            # Job has both min and max salary
             return not (job_max < min_with_tolerance or job_min > max_with_tolerance)
         elif job_min is not None:
-            # Case 2: Job has only min salary
+            # Job has only min salary
             return job_min <= max_with_tolerance
         elif job_max is not None:
-            # Case 3: Job has only max salary
+            # Job has only max salary
             return job_max >= min_with_tolerance
             
         return False
@@ -325,9 +325,9 @@ class MuseJobExtractor:
                                page: int = 1, limit: int = 20,
                                salary_min: Optional[float] = None, salary_max: Optional[float] = None,
                                experience_years: Optional[int] = None,
-                               location_max_distance_km: float = 50.0,
-                               salary_tolerance_percent: float = 15.0,
-                               experience_tolerance_years: int = 2) -> List[Dict]:
+                               location_max_distance: float = 2000,
+                               salary_tolerance_percent: float = 100,
+                               experience_tolerance_years: int = 20) -> List[Dict]:
         """
         Process job descriptions from The Muse API with fuzzy range matching.
         
@@ -416,7 +416,8 @@ class MuseJobExtractor:
                 if location and location_str:
                     location_matches = False
                     for loc_name in location_names:
-                        if self.is_within_location_range(loc_name, location, location_max_distance_km):
+                        print(self.is_within_location_range(loc_name, location, location_max_distance))
+                        if self.is_within_location_range(loc_name, location, location_max_distance):
                             location_matches = True
                             break
                     
@@ -439,7 +440,7 @@ class MuseJobExtractor:
                         dist = self.calculate_location_distance(loc_name, location)
                         if dist is not None:
                             distances[loc_name] = dist
-                
+
                 job_info = {
                     "job_id": job.get("id"),
                     "title": job.get("name"),
@@ -462,7 +463,7 @@ class MuseJobExtractor:
             if total_jobs_scanned >= 4 * limit:
                 break
         
-        print("number of job found:", len(results))
+        print("Number of job found:", len(results))
         return results
 
     def load_resume(self, filepath: str) -> str:
@@ -549,7 +550,6 @@ class MuseJobExtractor:
                         min_distance = min(min_distance, distance)
                     
                     if min_distance < float('inf'):
-                        # Exponential decay function: score = exp(-distance/decay_factor)
                         decay_factor = 50.0
                         location_score = max(0.1, np.exp(-min_distance / decay_factor))
             
@@ -605,11 +605,11 @@ class MuseJobExtractor:
                                        company_name: str = None,
                                        search: str = None, 
                                        level: str = None,
-                                       location_max_distance_km: float = 50.0,
-                                       salary_tolerance_percent: float = 15.0,
-                                       experience_tolerance_years: int = 2,
-                                       limit: int = 20,
-                                       top_n: int = 5,
+                                       location_max_distance: float = 2000,
+                                       salary_tolerance_percent: float = 100,
+                                       experience_tolerance_years: int = 20,
+                                       limit: int = 500,
+                                       top_n: int = 100,
                                        weight_content: float = 0.6,
                                        weight_location: float = 0.15,
                                        weight_salary: float = 0.15,
@@ -627,7 +627,7 @@ class MuseJobExtractor:
             company_name: Company name filter
             search: Search term
             level: Experience level filter
-            location_max_distance_km: Maximum distance for location matching
+            location_max_distance: Maximum distance for location matching
             salary_tolerance_percent: Percentage tolerance for salary matching
             experience_tolerance_years: Years tolerance for experience matching
             limit: Maximum number of results to fetch
@@ -651,7 +651,7 @@ class MuseJobExtractor:
             salary_min=salary_min,
             salary_max=salary_max,
             experience_years=experience_years,
-            location_max_distance_km=location_max_distance_km,
+            location_max_distance=location_max_distance,
             salary_tolerance_percent=salary_tolerance_percent,
             experience_tolerance_years=experience_tolerance_years
         )
