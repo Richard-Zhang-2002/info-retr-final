@@ -20,18 +20,13 @@ import geopy.distance
 from geopy.geocoders import Nominatim
 from collections import defaultdict
 
+#extract jobs, general class
 class MuseJobExtractor:
-    """Full extractor that fetches jobs, extracts metadata, matches resume, and can save results with fuzzy range matching for location, salary, and experience."""
-
     def __init__(self, api_key=None):
         
         self.api_url = "https://www.themuse.com/api/public/jobs"
         self.api_key = api_key 
         self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
-        
-        # Initialize geocoder for location range matching
-        self.geocoder = Nominatim(user_agent="muse_job_extractor")
-        self.location_cache = {}  # Cache for geocoding results
 
         try:
             with open("openai_key.txt", "r") as f:
@@ -40,24 +35,52 @@ class MuseJobExtractor:
         except FileNotFoundError:
             print("Warning: openai_key.txt not found. Resume summarization will fail.")
 
+
+    #basically convert the input location into a fixed format, for comparison later
+    def normalize_location_with_ai(self, location_query: str) -> Optional[Dict[str, str]]:
+        prompt = (
+            f"Given the location '{location_query}', return a JSON object with available structured fields: "
+            f"'city', 'state' (use 2-letter U.S. state abbreviations if applicable), and 'country'. "
+            f"Only include fields that are confidently applicable. "
+            f"For example, 'Tokyo' → {{'city': 'Tokyo', 'country': 'Japan'}}; 'Baltimore' → {{'city': 'Baltimore', 'state': 'MD', 'country': 'USA'}}. "
+            f"Use lowercase keys. Format the output as valid JSON."
+        )
+
+        try:
+            response = self.client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0
+            )
+            content = response.choices[0].message.content.strip()
+            if content.startswith("```") and content.endswith("```"):
+                content = "\n".join(content.splitlines()[1:-1]).strip()
+            print(f"[AI raw response] {content}")
+            parsed = json.loads(content)
+            return {k: v.lower() for k, v in parsed.items()}
+        except Exception as e:
+            print(f"AI normalization failed: {e}")
+            return None
+
+            
+    #different weighting for different level matches, same city would be ideal, same state may be fine, same country is too far...remote is always mediocure though
+    def compute_location_score(self, user_loc: Dict[str, str], job_locs: List[Dict[str, str]]) -> float:
+        max_score = 0.1
+        for job in job_locs:
+            if job.get("remote"):
+                max_score = max(max_score, 0.7)
+            elif user_loc.get("city") and job.get("city") and user_loc["city"] == job["city"]:
+                max_score = max(max_score, 1.0)
+            elif user_loc.get("state") and job.get("state") and user_loc["state"] == job["state"]:
+                max_score = max(max_score, 0.85)
+            elif user_loc.get("country") and job.get("country") and user_loc["country"] == job["country"]:
+                max_score = max(max_score, 0.85)
+        return max_score
+
+
     def fetch_jobs(self, category: str = None, company_name: str = None, 
                   search: str = None, location: str = None, level: str = None,
                   page: int = 1, descending: bool = False) -> Dict[str, Any]:
-        """
-        Fetch jobs from The Muse API.
-        
-        Args:
-            category: Job category
-            company_name: Company name filter
-            search: Search term
-            location: Job location filter
-            level: Experience level filter
-            page: Page number (1-indexed)
-            descending: Whether to show descending results
-            
-        Returns:
-            Dictionary containing job data
-        """
         params = {'page': page}
         if search:
             params['search'] = search
@@ -81,11 +104,10 @@ class MuseJobExtractor:
             response = requests.get(self.api_url, params=params)
             response.raise_for_status()
             
-            # Print rate limit information for debugging
-            limit = response.headers.get('X-RateLimit-Limit')
-            remaining = response.headers.get('X-RateLimit-Remaining')
-            reset = response.headers.get('X-RateLimit-Reset')
-            print(f"Rate limits - Total: {limit}, Remaining: {remaining}, Reset in: {reset}s")
+            #limit = response.headers.get('X-RateLimit-Limit')
+            #remaining = response.headers.get('X-RateLimit-Remaining')
+            #reset = response.headers.get('X-RateLimit-Reset')
+            #print(f"Rate limits - Total: {limit}, Remaining: {remaining}, Reset in: {reset}s")
             
             return response.json()
         except requests.exceptions.RequestException as e:
@@ -117,7 +139,6 @@ class MuseJobExtractor:
         return response.choices[0].message.content.strip()
 
     def extract_salary_range(self, contents: str) -> Optional[Tuple[float, float]]:
-        """Extract salary range from job description."""
         if not contents:
             return None
             
@@ -147,7 +168,6 @@ class MuseJobExtractor:
         return None
 
     def extract_experience(self, contents: str) -> Optional[int]:
-        """Extract years of experience required from job description."""
         if not contents:
             return None
             
@@ -169,7 +189,6 @@ class MuseJobExtractor:
         return None
 
     def extract_location_type(self, locations: List[Dict], contents: str) -> Optional[str]:
-        """Determine if job is remote, hybrid, or on-site based on location and description."""
         if not contents:
             return None
             
@@ -203,7 +222,6 @@ class MuseJobExtractor:
         return None
 
     def geocode_location(self, location_name: str) -> Optional[Tuple[float, float]]:
-        """Get latitude and longitude coordinates for a location name with caching."""
         if not location_name:
             return None
             
@@ -224,95 +242,48 @@ class MuseJobExtractor:
         return None
         
     def calculate_location_distance(self, location1: str, location2: str) -> Optional[float]:
-        """Calculate the distance between two locations in miles."""
         coords1 = self.geocode_location(location1)
         coords2 = self.geocode_location(location2)
         if coords1 and coords2:
             return geopy.distance.distance(coords1, coords2).miles
         return None
         
-    def is_within_location_range(self, job_location: str, desired_location: str, max_distance: float) -> bool:
-        """Check if job location is within the specified distance of the desired location."""
-        if not job_location or not desired_location:
-            return False
-            
-        # Remote jobs match any location preference
-        if "remote" in job_location.lower():
-            return True
-            
-        # Check exact match first
-        if desired_location.lower() in job_location.lower():
-            return True
-            
-        # Calculate distance
-        distance = self.calculate_location_distance(job_location, desired_location)
-        print(distance)
-        return distance is not None and distance <= max_distance
+
     
     def is_within_salary_range(self, job_min: Optional[float], job_max: Optional[float], 
                               desired_min: Optional[float], desired_max: Optional[float], 
                               tolerance_percent: float = 15.0) -> bool:
-        """
-        Check if job salary range has overlap with desired range, with tolerance.
-        
-        Args:
-            job_min: Minimum job salary
-            job_max: Maximum job salary
-            desired_min: Minimum desired salary
-            desired_max: Maximum desired salary
-            tolerance_percent: Percentage tolerance for matching (e.g., 15% below desired min still matches)
-            
-        Returns:
-            Boolean indicating if ranges overlap
-        """
         if job_min is None and job_max is None:
-            # If job has no salary info, always include it in results
+            #no salary info, assume it matches
             return True
             
         if desired_min is None and desired_max is None:
-            # If no desired salary specified, include all jobs
+            #didnt ask for a salary, so any job is within range
             return True
             
-        # Apply tolerance to desired minimum
         if desired_min is not None:
             min_with_tolerance = desired_min * (1 - tolerance_percent / 100)
         else:
             min_with_tolerance = float('-inf')
-            
-        # Apply tolerance to desired maximum
+        
         if desired_max is not None:
             max_with_tolerance = desired_max * (1 + tolerance_percent / 100)
         else:
             max_with_tolerance = float('inf')
             
-        # Check overlap scenarios
         if job_min is not None and job_max is not None:
-            # Job has both min and max salary
             return not (job_max < min_with_tolerance or job_min > max_with_tolerance)
         elif job_min is not None:
-            # Job has only min salary
             return job_min <= max_with_tolerance
         elif job_max is not None:
-            # Job has only max salary
             return job_max >= min_with_tolerance
             
         return False
         
     def is_within_experience_range(self, job_years: Optional[int], desired_years: Optional[int], 
                                  tolerance_years: int = 2) -> bool:
-        """
-        Check if job experience requirement is within desired range with tolerance.
         
-        Args:
-            job_years: Required years of experience for the job
-            desired_years: Desired years of experience to match
-            tolerance_years: Number of years tolerance (above or below desired)
-            
-        Returns:
-            Boolean indicating if experience requirement matches
-        """
         if job_years is None or desired_years is None:
-            # If either is not specified, consider it a match
             return True
             
         lower_bound = max(0, desired_years - tolerance_years)
@@ -327,28 +298,8 @@ class MuseJobExtractor:
                                experience_years: Optional[int] = None,
                                location_max_distance: float = 2000,
                                salary_tolerance_percent: float = 100,
-                               experience_tolerance_years: int = 20) -> List[Dict]:
-        """
-        Process job descriptions from The Muse API with fuzzy range matching.
-        
-        Args:
-            category: Job category
-            company_name: Company name filter
-            search: Search term
-            location: Job location filter
-            level: Experience level filter
-            page: Page number (1-indexed)
-            limit: Maximum number of results to return
-            salary_min: Minimum desired salary
-            salary_max: Maximum desired salary
-            experience_years: Desired years of experience
-            location_max_distance_km: Maximum distance in km for location matching
-            salary_tolerance_percent: Tolerance percentage for salary matching
-            experience_tolerance_years: Tolerance in years for experience matching
-            
-        Returns:
-            List of dictionaries containing processed job information
-        """
+                               experience_tolerance_years: int = 20,
+                               allow_remote_jobs: bool = True) -> List[Dict]:
         results = []
         current_page = page
         seen_jobs = set() 
@@ -358,14 +309,16 @@ class MuseJobExtractor:
         stemmer = PorterStemmer()
         search_stem = stemmer.stem(search.lower()) if search else None
 
+        if location:
+            user_loc_dict = self.normalize_location_with_ai(location)
+
         while len(results) < limit:
             response = self.fetch_jobs(category, company_name, search, location, level, page=current_page)
             jobs = response.get("results", [])
             if not jobs:
                 break
                 
-            for job in jobs:  
-                # Limit to specified number of results
+            for job in jobs:
                 if len(results) >= limit:
                     break
                     
@@ -391,12 +344,10 @@ class MuseJobExtractor:
                     if search_stem and (search_stem not in stemmed_title and search_stem not in stemmed_desc):
                         continue
                 
-                # Get locations and categories
                 locations = job.get("locations", [])
                 categories = job.get("categories", [])
                 levels = job.get("levels", [])
                 
-                # Extract additional information
                 salary_range = self.extract_salary_range(contents)
                 experience = self.extract_experience(contents)
                 location_type = self.extract_location_type(locations, contents)
@@ -405,42 +356,84 @@ class MuseJobExtractor:
                 if salary_range:
                     min_salary, max_salary = salary_range
                 
-                # Prepare location and category strings
                 location_names = [loc.get("name", "") for loc in locations]
+
+                #if we dont allow remote jobs, dont add them
+                if not allow_remote_jobs:
+                    is_remote_only = all("remote" in loc.lower() for loc in location_names)
+                    if is_remote_only:
+                        continue
+
                 location_str = ", ".join(location_names) if location_names else None
+                #print("location:",location_str)
+                #for name in location_names:
+                #    print(name)
                 category_names = [cat.get("name", "") for cat in categories]
                 level_names = [level.get("name", "") for level in levels]
                 
-                # Apply fuzzy range filters
-                # Check location range if specified
-                if location and location_str:
-                    location_matches = False
-                    for loc_name in location_names:
-                        print(self.is_within_location_range(loc_name, location, location_max_distance))
-                        if self.is_within_location_range(loc_name, location, location_max_distance):
-                            location_matches = True
+                normalized_locations = []
+
+                for loc in location_names:
+                    parts = [p.strip() for p in loc.split(",")]
+                    loc_obj = {}
+
+                    if "remote" in loc.lower():
+                        loc_obj["remote"] = True
+
+                    else:
+                        #should always be the case
+                        if len(parts) == 2:
+                            city_part, second_part = parts
+                            if re.fullmatch(r"[A-Z]{2}", second_part):
+                                loc_obj = {
+                                    "city": city_part.lower(),
+                                    "state": second_part.lower(),
+                                }
+                            else:
+                                loc_obj = {
+                                    "city": city_part.lower(),
+                                    "country": second_part.lower()
+                                }
+                        
+                        elif len(parts) == 1:
+                            #handle cases like singapore, both a city and a country
+                            loc_obj = {
+                                "city": parts[0].lower(),
+                                "country": parts[0].lower()
+                            }
+
+                        else:
+                            print("WHAT? We have something other than two??")
+                            print(f"Unexpected location format: '{loc}' with parts = {parts}")
+
+
+
+                    normalized_locations.append(loc_obj)
+
+
+                if user_loc_dict:
+                    matches = False
+                    for job_loc in normalized_locations:
+                        if (
+                            ("city" in user_loc_dict and "city" in job_loc and user_loc_dict["city"] == job_loc["city"]) or
+                            ("state" in user_loc_dict and "state" in job_loc and user_loc_dict["state"] == job_loc["state"]) or
+                            ("country" in user_loc_dict and "country" in job_loc and user_loc_dict["country"] == job_loc["country"])
+                        ):
+                            matches = True
                             break
-                    
-                    # Skip if location doesn't match within range
-                    if not location_matches and location_type != "Remote":
-                        continue
+                    if not matches:
+                        if allow_remote_jobs and any(loc.get("remote") for loc in normalized_locations):
+                            pass#remote can be any location
+                        else:
+                            continue
+
                 
-                # Check salary range if specified
                 if not self.is_within_salary_range(min_salary, max_salary, salary_min, salary_max, salary_tolerance_percent):
                     continue
                     
-                # Check experience range if specified
                 if not self.is_within_experience_range(experience, experience_years, experience_tolerance_years):
                     continue
                 
-                # Calculate distances for each location
-                distances = {}
-                if location and location_names:
-                    for loc_name in location_names:
-                        dist = self.calculate_location_distance(loc_name, location)
-                        if dist is not None:
-                            distances[loc_name] = dist
-
                 job_info = {
                     "job_id": job.get("id"),
                     "title": job.get("name"),
@@ -452,8 +445,7 @@ class MuseJobExtractor:
                     "max_salary": max_salary,
                     "years_experience": experience,
                     "locations": location_str,
-                    "location_type": location_type,
-                    "location_distances": distances if distances else None,
+                    "location_normalized":normalized_locations,
                     "levels": ", ".join(level_names) if level_names else None,
                     "publication_date": job.get("publication_date"),
                     "description": self.clean_text(contents)
@@ -467,7 +459,6 @@ class MuseJobExtractor:
         return results
 
     def load_resume(self, filepath: str) -> str:
-        """Load resume text from file."""
         _, ext = os.path.splitext(filepath)
         ext = ext.lower()
         if ext == ".txt":
@@ -484,30 +475,13 @@ class MuseJobExtractor:
         else:
             raise ValueError("Unsupported file type.")
 
+    #job experiences and salary are not absolute clear cut: I am looking a job that gives me 10k, 9k isnt ideal, but I am willing to take a look at it
     def match_resume_to_jobs(self, resume_text: str, jobs: List[Dict], top_n: int = 5,
                                target_location: str = None, target_salary: float = None, 
                                target_experience: int = None, weight_content: float = 0.6,
                                weight_location: float = 0.15, weight_salary: float = 0.15,
                                weight_experience: float = 0.1) -> List[Dict]:
-        """
-        Match resume to jobs using text embeddings and cosine similarity with weight decay based on distance from targets.
-        
-        Args:
-            resume_text: Text content of the resume
-            jobs: List of job dictionaries
-            top_n: Number of top matches to return
-            target_location: Target location for distance-based weight decay
-            target_salary: Target salary for salary-based weight decay (midpoint of desired range)
-            target_experience: Target experience years for experience-based weight decay
-            weight_content: Weight for content similarity (0.0-1.0)
-            weight_location: Weight for location proximity (0.0-1.0)
-            weight_salary: Weight for salary match (0.0-1.0)
-            weight_experience: Weight for experience match (0.0-1.0)
-            
-        Returns:
-            List of top matching jobs with aggregated scores
-        """
-        # Ensure weights sum to 1.0
+        #normalize weightsum
         total_weight = weight_content + weight_location + weight_salary + weight_experience
         if abs(total_weight - 1.0) > 0.001:
             weight_content = weight_content / total_weight
@@ -515,7 +489,6 @@ class MuseJobExtractor:
             weight_salary = weight_salary / total_weight
             weight_experience = weight_experience / total_weight
         
-        # Calculate content similarity scores
         resume_summary = self.summarize_resume(resume_text)
         corpus = [resume_summary] + [self.preprocess_job_description(job["description"]) for job in jobs]
         embeddings = self.embedding_model.encode(corpus, convert_to_tensor=True)
@@ -525,40 +498,22 @@ class MuseJobExtractor:
 
         cosine_sim = (resume_embedding @ job_embeddings.T) / (np.linalg.norm(resume_embedding) * np.linalg.norm(job_embeddings, axis=1))
 
+        user_loc_dict = self.normalize_location_with_ai(target_location) if target_location else {}
+
         for idx, job in enumerate(jobs):
-            # Store content similarity score
             job["content_similarity"] = float(cosine_sim[idx])
             
-            # Initialize component scores
             location_score = 1.0
             salary_score = 1.0
             experience_score = 1.0
             
-            # Calculate location score with distance-based decay
-            if target_location and job.get("locations"):
-                # Start with a default low score
-                location_score = 0.1
-                
-                # Check if remote (remote jobs get high score regardless of target location)
-                if job.get("location_type") == "Remote":
-                    location_score = 0.95
-                # Calculate distance-based decay for each location
-                elif job.get("location_distances"):
-                    # Find minimum distance from any job location to target
-                    min_distance = float('inf')
-                    for _, distance in job["location_distances"].items():
-                        min_distance = min(min_distance, distance)
-                    
-                    if min_distance < float('inf'):
-                        decay_factor = 50.0
-                        location_score = max(0.1, np.exp(-min_distance / decay_factor))
+            if user_loc_dict and job.get("location_normalized"):
+                location_score = self.compute_location_score(user_loc_dict, job["location_normalized"])
             
-            # Calculate salary score with salary difference decay
             if target_salary and (job.get("min_salary") is not None or job.get("max_salary") is not None):
                 job_min = job.get("min_salary")
                 job_max = job.get("max_salary")
                 
-                # Calculate job salary midpoint
                 if job_min is not None and job_max is not None:
                     job_salary = (job_min + job_max) / 2
                 elif job_min is not None:
@@ -569,18 +524,15 @@ class MuseJobExtractor:
                     job_salary = None
                 
                 if job_salary is not None:
-                    # Calculate percentage difference
                     percent_diff = abs(job_salary - target_salary) / target_salary
                     decay_factor = 0.15 
                     salary_score = max(0.1, np.exp(-percent_diff / decay_factor))
             
-            # Calculate experience score with years difference decay
             if target_experience is not None and job.get("years_experience") is not None:
                 years_diff = abs(job.get("years_experience") - target_experience)
                 decay_factor = 2.0 
                 experience_score = max(0.1, np.exp(-years_diff / decay_factor))
             
-            # Calculate weighted aggregate score
             aggregate_score = (
                 weight_content * job["content_similarity"] +
                 weight_location * location_score +
@@ -613,34 +565,8 @@ class MuseJobExtractor:
                                        weight_content: float = 0.6,
                                        weight_location: float = 0.15,
                                        weight_salary: float = 0.15,
-                                       weight_experience: float = 0.1) -> List[Dict]:
-        """
-        Comprehensive method to match a resume to jobs with fuzzy criteria and weighted scoring.
-        
-        Args:
-            resume_text: Text content of the resume
-            location: Desired job location
-            salary_min: Minimum desired salary
-            salary_max: Maximum desired salary
-            experience_years: Years of experience the candidate has
-            category: Job category filter
-            company_name: Company name filter
-            search: Search term
-            level: Experience level filter
-            location_max_distance: Maximum distance for location matching
-            salary_tolerance_percent: Percentage tolerance for salary matching
-            experience_tolerance_years: Years tolerance for experience matching
-            limit: Maximum number of results to fetch
-            top_n: Number of top matches to return
-            weight_content: Weight for content similarity (0.0-1.0)
-            weight_location: Weight for location proximity (0.0-1.0)
-            weight_salary: Weight for salary match (0.0-1.0)
-            weight_experience: Weight for experience match (0.0-1.0)
-            
-        Returns:
-            List of top matching jobs with weighted similarity scores
-        """
-        # Get jobs with fuzzy criteria matching
+                                       weight_experience: float = 0.1,
+                                       allow_remote_jobs: bool = True) -> List[Dict]:
         jobs = self.process_job_descriptions(
             category=category,
             company_name=company_name,
@@ -653,10 +579,10 @@ class MuseJobExtractor:
             experience_years=experience_years,
             location_max_distance=location_max_distance,
             salary_tolerance_percent=salary_tolerance_percent,
-            experience_tolerance_years=experience_tolerance_years
+            experience_tolerance_years=experience_tolerance_years,
+            allow_remote_jobs=allow_remote_jobs
         )
         
-        # Calculate target salary
         target_salary = None
         if salary_min is not None or salary_max is not None:
             if salary_min is not None and salary_max is not None:
@@ -666,7 +592,6 @@ class MuseJobExtractor:
             elif salary_max is not None:
                 target_salary = salary_max * 0.85
         
-        # Match the resume to these pre-filtered jobs with weighted scoring
         return self.match_resume_to_jobs(
             resume_text=resume_text, 
             jobs=jobs, 
@@ -679,30 +604,3 @@ class MuseJobExtractor:
             weight_salary=weight_salary,
             weight_experience=weight_experience
         )
-
-    def save_results(self, results: List[Dict], format: str = "json", filename: str = None) -> str:
-        """Save results to file in specified format."""
-        format = format.lower()
-        if not filename:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"muse_job_data_{timestamp}.{format}"
-
-        if format == "json":
-            with open(filename, "w", encoding="utf-8") as f:
-                json.dump(results, f, indent=2)
-        elif format == "csv":
-            fieldnames = set()
-            for job in results:
-                fieldnames.update(job.keys())
-            with open(filename, "w", newline="", encoding="utf-8") as f:
-                writer = csv.DictWriter(f, fieldnames=sorted(fieldnames))
-                writer.writeheader()
-                writer.writerows(results)
-        elif format == "excel":
-            df = pd.DataFrame(results)
-            df.to_excel(filename, index=False)
-        else:
-            raise ValueError("Unsupported file format: must be 'json', 'csv', or 'excel'.")
-
-        return os.path.abspath(filename)
-
