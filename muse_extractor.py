@@ -57,7 +57,8 @@ class MuseJobExtractor:
                 content = "\n".join(content.splitlines()[1:-1]).strip()
             print(f"[AI raw response] {content}")
             parsed = json.loads(content)
-            return {k: v.lower() for k, v in parsed.items()}
+            return {k: v.lower() for k, v in parsed.items() if v is not None}
+
         except Exception as e:
             print(f"AI normalization failed: {e}")
             return None
@@ -144,7 +145,7 @@ class MuseJobExtractor:
             
         clean_contents = re.sub(r'<[^>]+>', ' ', contents)
         
-        # Common salary patterns
+        #common salary patterns
         patterns = [
             r'\$(\d{1,3}(?:,\d{3})*(?:\.\d+)?)\s*[-–to]+\s*\$?(\d{1,3}(?:,\d{3})*(?:\.\d+)?)',
             r'(\d{1,3}(?:,\d{3})*(?:\.\d+)?)[k]\s*[-–to]+\s*(\d{1,3}(?:,\d{3})*(?:\.\d+)?)[k]',
@@ -194,7 +195,6 @@ class MuseJobExtractor:
             
         clean_contents = re.sub(r'<[^>]+>', ' ', contents).lower()
         
-        # Check location names first
         location_names = [loc.get('name', '').lower() for loc in locations if loc.get('name')]
         
         for loc in location_names:
@@ -203,7 +203,6 @@ class MuseJobExtractor:
             if 'hybrid' in loc:
                 return "Hybrid"
         
-        # Then check description
         work_arrangements = [
             (r'\bremote\b', "Remote"),
             (r'\bhybrid\b', "Hybrid"),
@@ -215,40 +214,10 @@ class MuseJobExtractor:
             if re.search(pattern, clean_contents, re.IGNORECASE):
                 return arrangement
                 
-        # Default to location name if we can't determine
         if locations and len(locations) > 0:
             return locations[0].get('name')
             
         return None
-
-    def geocode_location(self, location_name: str) -> Optional[Tuple[float, float]]:
-        if not location_name:
-            return None
-            
-        # Check cache first
-        if location_name in self.location_cache:
-            return self.location_cache[location_name]
-            
-        try:
-            # Try to geocode the location
-            location = self.geocoder.geocode(location_name)
-            if location:
-                coordinates = (location.latitude, location.longitude)
-                self.location_cache[location_name] = coordinates
-                return coordinates
-        except Exception as e:
-            print(f"Error geocoding {location_name}: {e}")
-            
-        return None
-        
-    def calculate_location_distance(self, location1: str, location2: str) -> Optional[float]:
-        coords1 = self.geocode_location(location1)
-        coords2 = self.geocode_location(location2)
-        if coords1 and coords2:
-            return geopy.distance.distance(coords1, coords2).miles
-        return None
-        
-
     
     def is_within_salary_range(self, job_min: Optional[float], job_max: Optional[float], 
                               desired_min: Optional[float], desired_max: Optional[float], 
