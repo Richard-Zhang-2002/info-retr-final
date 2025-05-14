@@ -278,6 +278,7 @@ class MuseJobExtractor:
         stemmer = PorterStemmer()
         search_stem = stemmer.stem(search.lower()) if search else None
 
+        user_loc_dict = None
         if location:
             user_loc_dict = self.normalize_location_with_ai(location)
 
@@ -380,7 +381,7 @@ class MuseJobExtractor:
                     normalized_locations.append(loc_obj)
 
 
-                if user_loc_dict:
+                if user_loc_dict is not None:
                     matches = False
                     for job_loc in normalized_locations:
                         if (
