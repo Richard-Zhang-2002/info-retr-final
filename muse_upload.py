@@ -206,7 +206,7 @@ def submit():
             location_max_distance=2000, 
             salary_tolerance_percent=100, 
             experience_tolerance_years=20,  
-            limit=100,#feel free to change this number if you are looking for more jobs
+            limit=5000,#feel free to change this number if you are looking for more jobs
             top_n=20,
             weight_content=content_weight,
             weight_location=location_weight,
